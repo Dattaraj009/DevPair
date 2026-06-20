@@ -183,7 +183,8 @@ import {
     updateProfileService,
     changePasswordService
 } from "../services/auth.service.js";
-import generateToken from "../utils/jwt.util.js";
+import { signAccessToken, signRefreshToken } from "../utils/jwt.util.js";
+import jwt from "jsonwebtoken";
 
 const registerWithEmail = async (req, res) => {
     try {
@@ -195,13 +196,20 @@ const registerWithEmail = async (req, res) => {
             password,
         });
 
-        const token = generateToken(res, user._id, user.role);
-
+        const accessToken = signAccessToken(user);
+        const refreshToken = signRefreshToken(user);
+        // Set refresh token as httpOnly cookie
+        res.cookie("refreshToken", refreshToken, {
+            httpOnly: true,
+            secure: true,
+            sameSite: "strict",
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
         res.status(200).json({
             success: true,
             message: "User registered successfully",
             user,
-            token // ✅ Return token in response
+            accessToken,
         });
     } catch (error) {
         res.status(500).json({
@@ -214,19 +222,23 @@ const registerWithEmail = async (req, res) => {
 const loginWithEmail = async (req, res) => {
     try {
         const { email, password } = req.body;
+        const user = await loginWithEmailService({ email, password });
+        
+        const accessToken = signAccessToken(user._id, user.role);
+        const refreshToken = signRefreshToken(user._id);
 
-        const user = await loginWithEmailService({
-            email,
-            password,
+        res.cookie("refreshToken", refreshToken, {
+            httpOnly: true,
+            secure: true,
+            sameSite: "strict",
+            maxAge: 7 * 24 * 60 * 60 * 1000,
         });
-
-        const token = generateToken(res, user._id, user.role);
 
         res.status(200).json({
             success: true,
             message: "User logged in successfully",
             user,
-            token // ✅ Return token in response
+            accessToken
         });
     } catch (error) {
         return res.status(500).json({
@@ -239,25 +251,24 @@ const loginWithEmail = async (req, res) => {
 const loginWithGoogle = async (req, res) => {
     try {
         const { idToken } = req.body;
+        if (!idToken) return res.status(400).json({ success: false, message: "Google id token is required" });
+        
+        const user = await loginWithGoogleService({ idToken });
+        const accessToken = signAccessToken(user._id, user.role);
+        const refreshToken = signRefreshToken(user._id);
 
-        if (!idToken) {
-            return res.status(400).json({
-                success: false,
-                message: "Google id token is required",
-            });
-        }
-
-        const user = await loginWithGoogleService({
-            idToken,
+        res.cookie("refreshToken", refreshToken, {
+            httpOnly: true,
+            secure: true,
+            sameSite: "strict",
+            maxAge: 7 * 24 * 60 * 60 * 1000,
         });
-
-        const token = generateToken(res, user._id, user.role);
 
         res.status(200).json({
             success: true,
             message: "Google login successfully",
             user,
-            token // ✅ Return token in response
+            accessToken
         });
     } catch (error) {
         return res.status(401).json({
@@ -267,12 +278,23 @@ const loginWithGoogle = async (req, res) => {
     }
 };
 
+const refresh = async (req, res) => {
+    try {
+        const refreshToken = req.cookies.refreshToken;
+        if (!refreshToken) return res.status(401).json({ success: false, message: "Refresh token required" });
+
+        const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+        const { newAccessToken, user } = await refreshService(decoded.userId);
+        
+        res.status(200).json({ success: true, accessToken: newAccessToken, user });
+    } catch (error) {
+        return res.status(403).json({ success: false, message: error.message });
+    }
+};
+
 const logout = async (req, res) => {
     try {
-        res.cookie("jwt", "", {
-            httpOnly: true,
-            expires: new Date(0),
-        });
+        res.clearCookie("refreshToken", { httpOnly: true, secure: true, sameSite: "strict" });
         res.status(200).json({
             success: true,
             message: "User logged out successfully",
